@@ -22,6 +22,8 @@ pub mod buf_pool_vec;
 /// BufVec is an implementation of the [Buf](crate::buf::Buf) trait that is easier to use in tests because it doesn't require the
 /// all of the AF_XDP infrastructure to be configured.
 pub mod buf_vec;
+/// Link
+pub mod link;
 /// MMapArea is a region of memory that is shared with one or more NICs via one or more [UMem](crate::umem::Umem)s.
 pub mod mmap_area;
 /// The Socket module represents an AF_XDP (XSK) socket which is used to transmit or receive packets.
