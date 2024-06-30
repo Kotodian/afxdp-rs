@@ -1,0 +1,5 @@
+ - core: 1
+   link_name: veth0
+   link_channel: 0
+
+

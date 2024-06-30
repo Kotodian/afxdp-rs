@@ -1,3 +1,4 @@
+use core::panic;
 use std::cmp::min;
 use std::convert::TryInto;
 use std::ffi::CString;
@@ -5,14 +6,16 @@ use std::sync::Arc;
 
 use arraydeque::{ArrayDeque, Wrapping};
 use errno::errno;
+use libbpf_sys::XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD;
 use libbpf_sys::{
     _xsk_ring_cons__peek, _xsk_ring_cons__release, _xsk_ring_cons__rx_desc,
     _xsk_ring_prod__needs_wakeup, _xsk_ring_prod__reserve, _xsk_ring_prod__submit,
-    _xsk_ring_prod__tx_desc, xdp_desc, xsk_ring_cons, xsk_ring_prod, xsk_socket,
-    xsk_socket__create, xsk_socket__delete, xsk_socket__fd, xsk_socket_config, xsk_umem, XDP_COPY,
-    XDP_FLAGS_UPDATE_IF_NOEXIST, XDP_USE_NEED_WAKEUP, XDP_ZEROCOPY,
+    _xsk_ring_prod__tx_desc, bpf_prog_load, bpf_xdp_attach, xdp_desc, xsk_ring_cons, xsk_ring_prod,
+    xsk_socket, xsk_socket__create, xsk_socket__delete, xsk_socket__fd, xsk_socket_config,
+    xsk_umem, XDP_COPY, XDP_FLAGS_UPDATE_IF_NOEXIST, XDP_USE_NEED_WAKEUP, XDP_ZEROCOPY,
 };
 use libc::{poll, pollfd, sendto, EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, POLLIN};
+use pf_rs::BPFLink;
 use thiserror::Error;
 
 use crate::umem::Umem;
@@ -28,6 +31,7 @@ pub struct Socket<'a, T: std::default::Default + std::marker::Copy> {
     umem: Arc<Umem<'a, T>>,
     socket: Box<xsk_socket>,
     if_name_c: CString,
+    bpf_link: Option<BPFLink>,
 }
 
 /// A Rx only AF_XDP socket
@@ -68,7 +72,7 @@ pub enum SocketError {
 }
 
 /// Configuration options for AF_XDP sockets
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SocketOptions {
     /// Force XDP zero copy mode (XDP_ZEROCOPY flag)
     pub zero_copy_mode: bool,
@@ -76,11 +80,8 @@ pub struct SocketOptions {
     /// Force XDP copy mode (XDP_COPY flag)
     pub copy_mode: bool,
 
-    /// Tx ring size (must be a power of two)
-    pub tx_ring_size: u32,
-
-    /// Rx ring size (must be a power of two)
-    pub rx_ring_size: u32,
+    /// Custom BPF program
+    pub bpf_filter: Option<pf_rs::filter::Filter>,
 }
 
 impl<'a, T: std::default::Default + std::marker::Copy> Socket<'a, T> {
@@ -133,6 +134,17 @@ impl<'a, T: std::default::Default + std::marker::Copy> Socket<'a, T> {
 
         let if_name_c = CString::new(if_name).unwrap();
 
+        let mut bpf_link = None;
+        if let Some(filter) = options.bpf_filter {
+            let ifindex: libc::c_uint;
+            unsafe {
+                ifindex = libc::if_nametoindex(if_name_c.as_ptr());
+            }
+            bpf_link = Some(filter.load_on(ifindex as i32).unwrap());
+
+            cfg.libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD;
+        }
+
         let ret: std::os::raw::c_int;
         unsafe {
             ret = xsk_socket__create(
@@ -157,6 +169,7 @@ impl<'a, T: std::default::Default + std::marker::Copy> Socket<'a, T> {
             umem,
             socket: unsafe { Box::from_raw(*xsk_ptr) },
             if_name_c,
+            bpf_link,
         });
 
         let rx = SocketRx {
@@ -237,6 +250,7 @@ impl<'a, T: std::default::Default + std::marker::Copy> Socket<'a, T> {
             umem,
             socket: unsafe { Box::from_raw(*xsk_ptr) },
             if_name_c,
+            bpf_link: None,
         });
 
         let rx = SocketRx {
@@ -312,6 +326,7 @@ impl<'a, T: std::default::Default + std::marker::Copy> Socket<'a, T> {
             umem,
             socket: unsafe { Box::from_raw(*xsk_ptr) },
             if_name_c,
+            bpf_link: None,
         });
 
         let tx = SocketTx {
@@ -590,7 +605,7 @@ mod tests {
             1,
             rx_ring_size,
             tx_ring_size,
-            options,
+            options.clone(),
         );
         match r {
             Err(SocketNewError::RingNotPowerOfTwo) => {
@@ -614,7 +629,7 @@ mod tests {
             1,
             rx_ring_size,
             tx_ring_size,
-            options,
+            options.clone(),
         );
         match r {
             Err(SocketNewError::RingNotPowerOfTwo) => {
@@ -636,7 +651,7 @@ mod tests {
             1,
             rx_ring_size,
             tx_ring_size,
-            options,
+            options.clone(),
         );
         match r {
             Err(SocketNewError::RingNotPowerOfTwo) => {

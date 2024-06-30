@@ -17,6 +17,7 @@ libc = "0.2"
 errno = "0.2"
 arraydeque = "0.4"
 thiserror = "1.0"
+pf-rs = { path = "pf-rs" }
 
 [dev-dependencies]
 criterion = "0.3"
