@@ -39,7 +39,7 @@ impl Filter {
         }
     }
 
-    pub fn load_on(self, ifindex: i32) -> Result<BPFLink> {
+    pub fn load_on(self, ifindex: i32) -> Result<BPFObj> {
         let mut bpf_obj = self
             .generate_and_load()
             .map_err(|e| Error::Internal(e.to_string()))?;
@@ -66,11 +66,11 @@ impl Filter {
         }
 
         // attach prog
-        let link = bpf_obj
+        bpf_obj
             .attach_prog(ifindex)
             .map_err(|e| Error::Internal(e.to_string()))?;
 
-        Ok(link)
+        Ok(bpf_obj)
     }
 
     pub fn generate_src(self) -> Result<()> {

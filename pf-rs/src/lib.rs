@@ -1,4 +1,4 @@
-pub use bpf::BPFLink;
+pub use bpf::BPFObj;
 
 mod bpf;
 mod bpfcode;

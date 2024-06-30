@@ -10,12 +10,12 @@ use libbpf_sys::XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD;
 use libbpf_sys::{
     _xsk_ring_cons__peek, _xsk_ring_cons__release, _xsk_ring_cons__rx_desc,
     _xsk_ring_prod__needs_wakeup, _xsk_ring_prod__reserve, _xsk_ring_prod__submit,
-    _xsk_ring_prod__tx_desc, bpf_prog_load, bpf_xdp_attach, xdp_desc, xsk_ring_cons, xsk_ring_prod,
-    xsk_socket, xsk_socket__create, xsk_socket__delete, xsk_socket__fd, xsk_socket_config,
-    xsk_umem, XDP_COPY, XDP_FLAGS_UPDATE_IF_NOEXIST, XDP_USE_NEED_WAKEUP, XDP_ZEROCOPY,
+    _xsk_ring_prod__tx_desc, xdp_desc, xsk_ring_cons, xsk_ring_prod, xsk_socket,
+    xsk_socket__create, xsk_socket__delete, xsk_socket__fd, xsk_socket_config, xsk_umem, XDP_COPY,
+    XDP_FLAGS_UPDATE_IF_NOEXIST, XDP_USE_NEED_WAKEUP, XDP_ZEROCOPY,
 };
 use libc::{poll, pollfd, sendto, EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, POLLIN};
-use pf_rs::BPFLink;
+use pf_rs::BPFObj;
 use thiserror::Error;
 
 use crate::umem::Umem;
@@ -31,7 +31,7 @@ pub struct Socket<'a, T: std::default::Default + std::marker::Copy> {
     umem: Arc<Umem<'a, T>>,
     socket: Box<xsk_socket>,
     if_name_c: CString,
-    bpf_link: Option<BPFLink>,
+    bpf_obj: Option<BPFObj>,
 }
 
 /// A Rx only AF_XDP socket
@@ -80,7 +80,7 @@ pub struct SocketOptions {
     /// Force XDP copy mode (XDP_COPY flag)
     pub copy_mode: bool,
 
-    /// Custom BPF program
+    /// Custom BPF filter
     pub bpf_filter: Option<pf_rs::filter::Filter>,
 }
 
@@ -134,13 +134,13 @@ impl<'a, T: std::default::Default + std::marker::Copy> Socket<'a, T> {
 
         let if_name_c = CString::new(if_name).unwrap();
 
-        let mut bpf_link = None;
+        let mut bpf_obj = None;
         if let Some(filter) = options.bpf_filter {
             let ifindex: libc::c_uint;
             unsafe {
                 ifindex = libc::if_nametoindex(if_name_c.as_ptr());
             }
-            bpf_link = Some(filter.load_on(ifindex as i32).unwrap());
+            bpf_obj = Some(filter.load_on(ifindex as i32).unwrap());
 
             cfg.libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD;
         }
@@ -169,7 +169,7 @@ impl<'a, T: std::default::Default + std::marker::Copy> Socket<'a, T> {
             umem,
             socket: unsafe { Box::from_raw(*xsk_ptr) },
             if_name_c,
-            bpf_link,
+            bpf_obj,
         });
 
         let rx = SocketRx {
@@ -225,6 +225,16 @@ impl<'a, T: std::default::Default + std::marker::Copy> Socket<'a, T> {
         let xsk_ptr: *mut *mut xsk_socket = &mut xsk;
 
         let if_name_c = CString::new(if_name).unwrap();
+        let mut bpf_obj = None;
+        if let Some(filter) = options.bpf_filter {
+            let ifindex: libc::c_uint;
+            unsafe {
+                ifindex = libc::if_nametoindex(if_name_c.as_ptr());
+            }
+            bpf_obj = Some(filter.load_on(ifindex as i32).unwrap());
+
+            cfg.libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD;
+        }
 
         let ret: std::os::raw::c_int;
         unsafe {
@@ -250,7 +260,7 @@ impl<'a, T: std::default::Default + std::marker::Copy> Socket<'a, T> {
             umem,
             socket: unsafe { Box::from_raw(*xsk_ptr) },
             if_name_c,
-            bpf_link: None,
+            bpf_obj,
         });
 
         let rx = SocketRx {
@@ -260,82 +270,6 @@ impl<'a, T: std::default::Default + std::marker::Copy> Socket<'a, T> {
         };
 
         Ok((arc, rx))
-    }
-
-    /// Create a new Tx-only AF_XDP socket
-    pub fn new_tx(
-        umem: Arc<Umem<'a, T>>,
-        if_name: &str,
-        queue: usize,
-        tx_ring_size: u32,
-        options: SocketOptions,
-    ) -> Result<(Arc<Socket<'a, T>>, SocketTx<'a, T>), SocketNewError> {
-        // Verify that the passed ring size is a power of two.
-        // https://www.kernel.org/doc/html/latest/networking/af_xdp.html
-        if !util::is_pow_of_two(tx_ring_size) {
-            return Err(SocketNewError::RingNotPowerOfTwo);
-        }
-
-        let mut cfg = xsk_socket_config {
-            rx_size: 0,
-            tx_size: tx_ring_size,
-            xdp_flags: XDP_FLAGS_UPDATE_IF_NOEXIST,
-            bind_flags: XDP_USE_NEED_WAKEUP as u16,
-            libbpf_flags: 0,
-            __bindgen_padding_0: Default::default(),
-        };
-
-        if options.zero_copy_mode {
-            cfg.bind_flags |= XDP_ZEROCOPY as u16;
-        }
-
-        if options.copy_mode {
-            cfg.bind_flags |= XDP_COPY as u16;
-        }
-
-        // Heap allocate since they are passed to the C function
-        let mut tx: Box<xsk_ring_prod> = Default::default();
-
-        // C function has double indirection
-        let mut xsk: *mut xsk_socket = std::ptr::null_mut();
-        let xsk_ptr: *mut *mut xsk_socket = &mut xsk;
-
-        let if_name_c = CString::new(if_name).unwrap();
-
-        let ret: std::os::raw::c_int;
-        unsafe {
-            ret = xsk_socket__create(
-                xsk_ptr,
-                if_name_c.as_ptr(),
-                queue as u32,
-                umem.get_ptr() as *mut xsk_umem,
-                std::ptr::null_mut(),
-                tx.as_mut(),
-                &cfg,
-            );
-        }
-
-        if ret != 0 {
-            let errno = errno().0;
-            return Err(SocketNewError::Create(std::io::Error::from_raw_os_error(
-                errno,
-            )));
-        }
-
-        let arc = Arc::new(Socket {
-            umem,
-            socket: unsafe { Box::from_raw(*xsk_ptr) },
-            if_name_c,
-            bpf_link: None,
-        });
-
-        let tx = SocketTx {
-            socket: arc.clone(),
-            tx,
-            fd: unsafe { xsk_socket__fd(*xsk_ptr) },
-        };
-
-        Ok((arc, tx))
     }
 }
 

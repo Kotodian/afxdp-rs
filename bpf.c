@@ -1,4 +1,3 @@
-pub const INCLUDE_HEADERS: &str = r##"
 // SPDX-License-Identifier: BSD-3-Clause
 /* Copyright (c) 2022 Miguel Guarniz */
 #include <linux/bpf.h>
@@ -11,16 +10,15 @@ pub const INCLUDE_HEADERS: &str = r##"
 #include <linux/udp.h>
 #include <linux/tcp.h>
 #include <bpf/bpf_endian.h>
-"##;
 
-pub const DEFINES: &str = "\
-#define ETH_P_IP 0x0800\n\
-#define ETH_P_IPV6 0x86DD\n\
-#define IPV6_ADDR_LEN 16\n\
-#define DEFAULT_QUEUE_IDS 64\n\
-#define NOOP 0\n";
+#define ETH_P_IP 0x0800
+#define ETH_P_IPV6 0x86DD
+#define IPV6_ADDR_LEN 16
+#define IPV4_RULE_COUNT 10
+#define IPV6_RULE_COUNT 10
+#define DEFAULT_QUEUE_IDS 64
+#define NOOP 0
 
-pub const STRUCTS: &str = "\
 struct ip4_addr {
     __be32 saddr;
     __be32 daddr;
@@ -40,25 +38,22 @@ struct rule {
 
     struct ip4_addr ip4_addr;
     struct ip6_addr ip6_addr;
-};";
+};
 
-pub const IP4RULES_MAPS: &str = r#"\
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, IPV4_RULE_COUNT);
     __type(key, __u32);
     __type(value, struct rule);
-} ipv4_rules SEC(".maps");"#;
+} ipv4_rules SEC(".maps");
 
-pub const IP6RULES_MAPS: &str = r#"\
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, IPV6_RULE_COUNT);
     __type(key, __u32);
     __type(value, struct rule);
-} ipv6_rules SEC(".maps");"#;
+} ipv6_rules SEC(".maps");
 
-pub const XSKS_MAPS: &str = r#"\
 struct
 {
   __uint (type, BPF_MAP_TYPE_XSKMAP);
@@ -66,9 +61,7 @@ struct
   __uint (value_size, sizeof (int));
   __uint (max_entries, DEFAULT_QUEUE_IDS);
 } xsks_map SEC (".maps");
-"#;
 
-pub const PARSERS: &str = r##"
 struct hdr_cursor {
     void *pos;
 };
@@ -108,19 +101,6 @@ static int parse_ip4hdr(struct hdr_cursor *nh, void *data_end, struct iphdr **ip
     return iph->protocol;
 }
 
-static int parse_ip6hdr(struct hdr_cursor *nh, void *data_end, struct ipv6hdr **iphdr)
-{
-    struct ipv6hdr *iph = nh->pos;
-
-    if (iph + 1 > data_end)
-        return -1;
-
-    nh->pos = iph + 1;
-    *iphdr = iph;
-
-    return iph->nexthdr;
-}
-
 static int parse_udphdr(struct hdr_cursor *nh, void *data_end, struct udphdr **udphdr)
 {
     struct udphdr *udph = nh->pos;
@@ -152,9 +132,8 @@ static int parse_tcphdr(struct hdr_cursor *nh, void *data_end, struct tcphdr **t
     nh->pos += hdrsize;
     *tcphdr = tcph;
     return 0;
-}"##;
+}
 
-pub const IP4_EVAL_FUNCS: &str = r##"
 static int get_ipv4_rule(int i, struct rule **rule)
 {
     struct rule *res = bpf_map_lookup_elem(&ipv4_rules, &i);
@@ -172,16 +151,6 @@ static int eval_ipv4_rule(struct rule *rule, struct rule *pack)
            (rule->ip4_addr.saddr == 0 || rule->ip4_addr.saddr == pack->ip4_addr.saddr) &&
            (rule->ip4_addr.daddr == 0 || rule->ip4_addr.daddr == pack->ip4_addr.daddr);
 
-}"##;
-
-pub const IP6_EVAL_FUNCS: &str = r##"
-static int get_ipv6_rule(int i, struct rule **rule)
-{
-    struct rule *res = bpf_map_lookup_elem(&ipv6_rules, &i);
-    if (!res)
-        return -1;
-    *rule = res;
-    return 0;
 }
 
 static int is_zero(const __u8 a[IPV6_ADDR_LEN])
@@ -202,105 +171,28 @@ static int equals(__u8 a[IPV6_ADDR_LEN], __u8 b[IPV6_ADDR_LEN])
     return 1;
 }
 
-static int eval_ipv6_rule(struct rule *rule, struct rule *pack)
+static int eval_rules(int ip_version, struct rule *packet)
 {
-    return (rule->proto == 0 || rule->proto == pack->proto) &&
-           (rule->sport == 0 || rule->sport == pack->sport) &&
-           (rule->dport == 0 || rule->dport == pack->dport) &&
-           (is_zero(rule->ip6_addr.saddr) || equals(rule->ip6_addr.saddr, pack->ip6_addr.saddr)) &&
-           (is_zero(rule->ip6_addr.daddr) || equals(rule->ip6_addr.daddr, pack->ip6_addr.daddr));
+    struct rule *rule = NULL;
+    int action = -1;
+    if (ip_version == bpf_htons(ETH_P_IP)) {
+        for (int i=0; i < IPV4_RULE_COUNT; i++) {
+            if (get_ipv4_rule(i, &rule) < 0) {
+                bpf_printk("Error: failed to get rule [index %d]", i);
+                return -1;
+            }
+            if (eval_ipv4_rule(rule, packet)) {
+                action = rule->action;
+            }
+        }
+    }
+    // if action != 1 then it must have matched a rule
+    if (rule && rule->quick && action != -1)
+        return action;
+
+    return action;
 }
-"##;
 
-pub static EVAL_BOTH_IPVER: &str = r#"
-static int eval_rules(int ip_version, struct rule *packet)
-{
-    struct rule *rule = NULL;
-    int action = -1;
-    if (ip_version == bpf_htons(ETH_P_IP)) {
-        for (int i=0; i < IPV4_RULE_COUNT; i++) {
-            if (get_ipv4_rule(i, &rule) < 0) {
-                bpf_printk("Error: failed to get rule [index %d]", i);
-                return -1;
-            }
-            if (eval_ipv4_rule(rule, packet)) {
-                action = rule->action;
-            }
-        }
-    } else if (ip_version == bpf_htons(ETH_P_IPV6)) {
-        for (int i=0; i < IPV6_RULE_COUNT; i++) {
-            if (get_ipv6_rule(i, &rule) < 0) {
-                bpf_printk("Error: failed to get rule [index %d]", i);
-                return -1;
-            }
-            if (eval_ipv6_rule(rule, packet)) {
-                action = rule->action;
-            }
-        }
-    }
-
-    // if action != 1 then it must have matched a rule
-    if (rule && rule->quick && action != -1)
-        return action;
-
-    return action;
-}"#;
-
-pub static EVAL_ONLY_IP6: &str = r#"
-static int eval_rules(int ip_version, struct rule *packet)
-{
-    struct rule *rule = NULL;
-    int action = -1;
-    if (ip_version == bpf_htons(ETH_P_IPV6)) {
-        for (int i=0; i < IPV6_RULE_COUNT; i++) {
-            if (get_ipv6_rule(i, &rule) < 0) {
-                bpf_printk("Error: failed to get rule [index %d]", i);
-                return -1;
-            }
-            if (eval_ipv6_rule(rule, packet)) {
-                action = rule->action;
-            }
-        }
-    }
-
-    // if action != 1 then it must have matched a rule
-    if (rule && rule->quick && action != -1)
-        return action;
-
-    return action;
-}"#;
-
-pub static EVAL_ONLY_IP4: &str = r#"
-static int eval_rules(int ip_version, struct rule *packet)
-{
-    struct rule *rule = NULL;
-    int action = -1;
-    if (ip_version == bpf_htons(ETH_P_IP)) {
-        for (int i=0; i < IPV4_RULE_COUNT; i++) {
-            if (get_ipv4_rule(i, &rule) < 0) {
-                bpf_printk("Error: failed to get rule [index %d]", i);
-                return -1;
-            }
-            if (eval_ipv4_rule(rule, packet)) {
-                action = rule->action;
-            }
-        }
-    }
-
-    // if action != 1 then it must have matched a rule
-    if (rule && rule->quick && action != -1)
-        return action;
-
-    return action;
-}"#;
-
-pub static EVAL_NOOP: &str = r#"
-static int eval_rules(int ip_version, struct rule *packet)
-{
-    return -1;
-}"#;
-
-pub const PROGRAM: &str = r##"
 static void print_rule(struct rule *rule)
 {
     bpf_printk("action [ %u ] (DROP: 1) (PASS: 2)", rule->action);
@@ -311,8 +203,14 @@ static void print_rule(struct rule *rule)
     bpf_printk("ipv6 [ dst %pI6 ]", &rule->ip6_addr.daddr);
 }
 
+struct
+{
+  __uint (priority, 10);
+  __uint (XDP_PASS, 1);
+} XDP_RUN_CONFIG (xdp_pf);
+
 SEC("xdp")
-int xdp_sock_prog(struct xdp_md *ctx)
+int xdp_pf(struct xdp_md *ctx)
 {
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
@@ -339,13 +237,6 @@ int xdp_sock_prog(struct xdp_md *ctx)
             goto out;
         ip4.saddr = iphdr->saddr;
         ip4.daddr = iphdr->daddr;
-    } else if (ip_version == bpf_htons(ETH_P_IPV6)) {
-        if ((proto = parse_ip6hdr(&nh, data_end, &ipv6hdr)) < 0)
-            goto out;
-        __builtin_memcpy(ip6.saddr, ipv6hdr->saddr.in6_u.u6_addr8, sizeof ipv6hdr->saddr.in6_u.u6_addr8);
-        __builtin_memcpy(ip6.daddr, ipv6hdr->daddr.in6_u.u6_addr8, sizeof ipv6hdr->daddr.in6_u.u6_addr8);
-    } else {
-        goto out;
     }
 
     // parse UDP and tcp
@@ -376,4 +267,4 @@ int xdp_sock_prog(struct xdp_md *ctx)
 }
 
 char __license[] SEC("license") = "GPL";
-"##;
+

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::ptr;
 
 use anyhow::{anyhow, bail, Result};
-use libbpf_sys;
+use libbpf_sys::{self, bpf_program__fd, bpf_xdp_attach, XDP_FLAGS_UPDATE_IF_NOEXIST};
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -12,6 +12,7 @@ pub struct BPFLink {
     ptr: *mut libbpf_sys::bpf_link,
 }
 
+#[derive(Debug)]
 pub struct BPFObj {
     ptr: *mut libbpf_sys::bpf_object,
     progs: Vec<BPFProg>,
@@ -116,10 +117,10 @@ impl BPFObj {
         }
     }
 
-    pub fn attach_prog(&mut self, ifindex: i32) -> Result<BPFLink> {
+    pub fn attach_prog(&mut self, ifindex: i32) -> Result<()> {
         // for now we only support one program
         match self.progs.get_mut(0) {
-            Some(p) => p.attach_xdp(ifindex),
+            Some(p) => p.attach_xdp2(ifindex),
             _ => bail!("failed to retrieve prog"),
         }
     }
@@ -133,6 +134,7 @@ impl Drop for BPFObj {
     }
 }
 
+#[derive(Debug)]
 struct BPFMap {
     #[allow(dead_code)]
     map_ptr: *mut libbpf_sys::bpf_map,
@@ -177,6 +179,7 @@ impl BPFMap {
     }
 }
 
+#[derive(Debug)]
 struct BPFProg {
     ptr: *mut libbpf_sys::bpf_program,
 }
@@ -194,5 +197,22 @@ impl BPFProg {
         }
 
         Ok(BPFLink { ptr })
+    }
+
+    fn attach_xdp2(&mut self, ifindex: i32) -> Result<()> {
+        unsafe {
+            let fd = bpf_program__fd(self.ptr);
+            let err = bpf_xdp_attach(
+                ifindex,
+                fd,
+                XDP_FLAGS_UPDATE_IF_NOEXIST,
+                std::ptr::null_mut(),
+            );
+            if err != 0 {
+                bail!("error {}: could not attach prog to xdp hook", err as i32);
+            }
+
+            Ok(())
+        }
     }
 }
