@@ -1,6 +1,6 @@
 use std::ffi::CString;
 
-pub fn link_fd_xdp(link_name: String) {
+pub fn remove_link_fd_xdp(link_name: String) {
     let link_name_c = CString::new(link_name).unwrap();
     let link_index: libc::c_uint;
     unsafe {

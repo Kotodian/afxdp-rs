@@ -14,7 +14,7 @@ pub struct BPFLink {
 
 #[derive(Debug)]
 pub struct BPFObj {
-    ptr: *mut libbpf_sys::bpf_object,
+    pub ptr: *mut libbpf_sys::bpf_object,
     progs: Vec<BPFProg>,
     maps: HashMap<String, BPFMap>,
 }

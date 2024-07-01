@@ -2,18 +2,20 @@ use core::panic;
 use std::cmp::min;
 use std::convert::TryInto;
 use std::ffi::CString;
+use std::os::raw::c_char;
 use std::sync::Arc;
 
 use arraydeque::{ArrayDeque, Wrapping};
 use errno::errno;
-use libbpf_sys::XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD;
 use libbpf_sys::{
     _xsk_ring_cons__peek, _xsk_ring_cons__release, _xsk_ring_cons__rx_desc,
     _xsk_ring_prod__needs_wakeup, _xsk_ring_prod__reserve, _xsk_ring_prod__submit,
-    _xsk_ring_prod__tx_desc, xdp_desc, xsk_ring_cons, xsk_ring_prod, xsk_socket,
-    xsk_socket__create, xsk_socket__delete, xsk_socket__fd, xsk_socket_config, xsk_umem, XDP_COPY,
-    XDP_FLAGS_UPDATE_IF_NOEXIST, XDP_USE_NEED_WAKEUP, XDP_ZEROCOPY,
+    _xsk_ring_prod__tx_desc, bpf_map__fd, bpf_object, xdp_desc, xsk_ring_cons, xsk_ring_prod,
+    xsk_socket, xsk_socket__create, xsk_socket__delete, xsk_socket__fd, xsk_socket__update_xskmap,
+    xsk_socket_config, xsk_umem, XDP_COPY, XDP_FLAGS_UPDATE_IF_NOEXIST, XDP_USE_NEED_WAKEUP,
+    XDP_ZEROCOPY,
 };
+use libbpf_sys::{bpf_object__find_map_by_name, XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD};
 use libc::{poll, pollfd, sendto, EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, POLLIN};
 use pf_rs::BPFObj;
 use thiserror::Error;
@@ -165,6 +167,22 @@ impl<'a, T: std::default::Default + std::marker::Copy> Socket<'a, T> {
             )));
         }
 
+        if let Some(ref bpf_obj) = bpf_obj {
+            unsafe {
+                let c_string = CString::new("xsks_map").unwrap();
+                let bpf_map = bpf_object__find_map_by_name(
+                    bpf_obj.ptr as *const bpf_object,
+                    c_string.as_ptr() as *const c_char,
+                );
+                let ret = xsk_socket__update_xskmap(*xsk_ptr, bpf_map__fd(bpf_map));
+                if ret != 0 {
+                    return Err(SocketNewError::Create(std::io::Error::from_raw_os_error(
+                        ret,
+                    )));
+                }
+            }
+        }
+
         let arc = Arc::new(Socket {
             umem,
             socket: unsafe { Box::from_raw(*xsk_ptr) },
@@ -254,6 +272,20 @@ impl<'a, T: std::default::Default + std::marker::Copy> Socket<'a, T> {
             return Err(SocketNewError::Create(std::io::Error::from_raw_os_error(
                 errno,
             )));
+        }
+
+        if let Some(ref bpf_obj) = bpf_obj {
+            unsafe {
+                let c_string = CString::new("xsks_map").unwrap();
+                let bpf_map = bpf_object__find_map_by_name(
+                    bpf_obj.ptr as *const bpf_object,
+                    c_string.as_ptr() as *const c_char,
+                );
+                let ret = xsk_socket__update_xskmap(*xsk_ptr, bpf_map__fd(bpf_map));
+                return Err(SocketNewError::Create(std::io::Error::from_raw_os_error(
+                    ret,
+                )));
+            }
         }
 
         let arc = Arc::new(Socket {

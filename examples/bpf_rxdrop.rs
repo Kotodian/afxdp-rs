@@ -1,6 +1,7 @@
 //
 // Example receives frames and drops them while printing the packet rate.
 //
+use afxdp::buf::Buf;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::io::prelude::*;
@@ -476,7 +477,7 @@ fn main() {
         for (src, dst) in addrs.into_iter() {
             filter.add_rule(
                 pf_rs::rule::Builder::new()
-                    .pass()
+                    .block()
                     .set_ipv4()
                     .from_addr(src)
                     .to_addr(dst)

@@ -65,8 +65,7 @@ struct
   __uint (key_size, sizeof (int));
   __uint (value_size, sizeof (int));
   __uint (max_entries, DEFAULT_QUEUE_IDS);
-} xsks_map SEC (".maps");
-"#;
+} xsks_map SEC (".maps");"#;
 
 pub const PARSERS: &str = r##"
 struct hdr_cursor {
@@ -374,7 +373,7 @@ int xdp_sock_prog(struct xdp_md *ctx)
     }
     out:
     // default action
-    return bpf_redirect_map (&xsks_map, ctx->rx_queue_index, XDP_PASS);
+    return bpf_redirect_map (&xsks_map, ctx->rx_queue_index, 0);
 }
 
 char __license[] SEC("license") = "GPL";

@@ -8,6 +8,7 @@ use crate::ip::{get_zero_addr, ToSockAddr};
 
 #[derive(Debug)]
 pub(crate) enum Proto {
+    ICMP,
     UDP,
     TCP,
     Any,
@@ -110,6 +111,7 @@ impl Builder {
     pub fn proto<T: AsRef<str>>(self, proto: T) -> Builder {
         self.and_then(|mut parts| {
             parts.proto = match proto.as_ref().to_lowercase().as_str() {
+                "icmp" => Proto::ICMP,
                 "udp" => Proto::UDP,
                 "tcp" => Proto::TCP,
                 _ => {
@@ -263,6 +265,7 @@ impl Builder {
             };
 
             raw_rule.proto = match &parts.proto {
+                Proto::ICMP => 1,
                 Proto::TCP => 6,
                 Proto::UDP => 17,
                 Proto::Any => 0,

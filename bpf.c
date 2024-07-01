@@ -259,7 +259,7 @@ int xdp_sock_prog(struct xdp_md *ctx)
     }
     out:
     // default action
-    return bpf_redirect_map (&xsks_map, ctx->rx_queue_index, XDP_PASS);
+    return bpf_redirect_map (&xsks_map, ctx->rx_queue_index, XDP_REDIRECT);
 }
 
 char __license[] SEC("license") = "GPL";
