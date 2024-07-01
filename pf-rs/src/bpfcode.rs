@@ -368,7 +368,9 @@ int xdp_sock_prog(struct xdp_md *ctx)
         // so we add action only for logging purposes
         packet.action = action;
         print_rule(&packet);
-        return action;
+        if (action == 1) {
+            return action;
+        }
     }
     out:
     // default action

@@ -186,7 +186,7 @@ static int eval_rules(int ip_version, struct rule *packet)
             }
         }
     }
-    // if action != 1 then it must have matched a rule
+    // if action != -1 then it must have matched a rule
     if (rule && rule->quick && action != -1)
         return action;
 
@@ -203,14 +203,8 @@ static void print_rule(struct rule *rule)
     bpf_printk("ipv6 [ dst %pI6 ]", &rule->ip6_addr.daddr);
 }
 
-struct
-{
-  __uint (priority, 10);
-  __uint (XDP_PASS, 1);
-} XDP_RUN_CONFIG (xdp_pf);
-
 SEC("xdp")
-int xdp_pf(struct xdp_md *ctx)
+int xdp_sock_prog(struct xdp_md *ctx)
 {
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
@@ -259,7 +253,9 @@ int xdp_pf(struct xdp_md *ctx)
         // so we add action only for logging purposes
         packet.action = action;
         print_rule(&packet);
-        return action;
+        if (action == 1) {
+            return action;
+        }
     }
     out:
     // default action

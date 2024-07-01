@@ -469,21 +469,15 @@ fn main() {
         let mut options = SocketOptions::default();
         options.zero_copy_mode = opt.zero_copy;
         options.copy_mode = opt.copy;
-        let addrs = [
-            ("10.11.4.2", "10.11.3.2"),
-            ("10.11.6.2", "10.11.3.2"),
-            ("10.11.5.2", "10.11.2.2"),
-            ("10.11.127.2", "100.11.2.2"),
-            ("0:0:0:0:0:FFFF:204.152.189.116", "1:0:0:0:0:0:0:8"),
-            ("0:0:0:0:0:FFFF:204.152.189.116", "1:0:0:0:0:0:0:8"),
-        ];
+        let addrs = [("192.168.89.1", "192.168.89.2")];
 
         let mut filter = pf_rs::filter::Filter::new();
 
         for (src, dst) in addrs.into_iter() {
             filter.add_rule(
                 pf_rs::rule::Builder::new()
-                    .block()
+                    .pass()
+                    .set_ipv4()
                     .from_addr(src)
                     .to_addr(dst)
                     .build()
